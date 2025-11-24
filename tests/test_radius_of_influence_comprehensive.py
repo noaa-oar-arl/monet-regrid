@@ -110,9 +110,9 @@ def test_radius_of_influence_various_values():
 
     # Print summary
     # print("\nSummary of radius_of_influence effects:")
-    for radius, data in results.items():
-        radius_str = "None (default)" if radius is None else f"{radius:,}m"
-        # print(f"  Radius {radius_str}: {data['nan_count']} NaNs ({data['nan_percentage']:.2f}%)")
+    # for radius, data in results.items():
+    #     radius_str = "None (default)" if radius is None else f"{radius:,}m"
+    #     # print(f"  Radius {radius_str}: {data['nan_count']} NaNs ({data['nan_percentage']:.2f}%)")
 
     return results
 
@@ -148,8 +148,8 @@ def test_before_after_behavior():
     nan_count_after = np.sum(np.isnan(result_after.data))
     # print(f"  After fix (reasonable radius): {nan_count_after} NaNs")
 
-    improvement = nan_count_before - nan_count_after
-    improvement_pct = ((nan_count_before - nan_count_after) / nan_count_before * 100) if nan_count_before > 0 else 0
+    # improvement = nan_count_before - nan_count_after
+    # improvement_pct = ((nan_count_before - nan_count_after) / nan_count_before * 100) if nan_count_before > 0 else 0
 
     # print(f"  Improvement: {improvement} fewer NaNs ({improvement_pct:.2f}% reduction)")
 
@@ -170,14 +170,14 @@ def test_backward_compatibility():
     # print("Testing without radius_of_influence parameter (backward compatibility):")
     interpolator_default = CurvilinearInterpolator(source_grid, target_grid, method="nearest")
     result_default = interpolator_default(test_data)
-    nan_count_default = np.sum(np.isnan(result_default.data))
+    # nan_count_default = np.sum(np.isnan(result_default.data))
     # print(f"  Default behavior (no radius): {nan_count_default} NaNs")
 
     # Test with radius_of_influence=None (should be equivalent to no radius)
     # print("Testing with radius_of_influence=None:")
     interpolator_none = CurvilinearInterpolator(source_grid, target_grid, method="nearest", radius_of_influence=None)
     result_none = interpolator_none(test_data)
-    nan_count_none = np.sum(np.isnan(result_none.data))
+    # nan_count_none = np.sum(np.isnan(result_none.data))
     # print(f"  With radius_of_influence=None: {nan_count_none} NaNs")
 
     # Results should be equivalent
@@ -213,7 +213,7 @@ def benchmark_performance():
         times = []
         for i in range(iterations):
             start_time = time.time()
-            result = interpolator(test_data)
+            interpolator(test_data)
             end_time = time.time()
             times.append(end_time - start_time)
 
@@ -226,9 +226,9 @@ def benchmark_performance():
 
     # Print performance summary
     # print("\nPerformance summary:")
-    for radius, perf_data in performance_results.items():
-        radius_str = "None (default)" if radius is None else f"{radius:,}m"
-        # print(f" Radius {radius_str}: {perf_data['avg_time']:.4f}s ± {perf_data['std_time']:.4f}s")
+    # for radius, perf_data in performance_results.items():
+    #     radius_str = "None (default)" if radius is None else f"{radius:,}m"
+    #     # print(f" Radius {radius_str}: {perf_data['avg_time']:.4f}s ± {perf_data['std_time']:.4f}s")
 
     return performance_results
 
@@ -303,8 +303,8 @@ def test_error_handling():
         interpolator_negative = CurvilinearInterpolator(
             source_grid, target_grid, method="nearest", radius_of_influence=-100000
         )
-        result_negative = interpolator_negative(test_data)
-        nan_count_negative = np.sum(np.isnan(result_negative.data))
+        interpolator_negative(test_data)
+        # nan_count_negative = np.sum(np.isnan(result_negative.data))
         # print(f"  Negative radius handled, NaN count: {nan_count_negative}")
     except Exception:
         # print(f"  Negative radius raised exception: {e}")
@@ -319,8 +319,8 @@ def test_error_handling():
             method="nearest",
             radius_of_influence=1e10,  # Extremely large radius
         )
-        result_extreme = interpolator_extreme(test_data)
-        nan_count_extreme = np.sum(np.isnan(result_extreme.data))
+        interpolator_extreme(test_data)
+        # nan_count_extreme = np.sum(np.isnan(result_extreme.data))
         # print(f" Extremely large radius, NaN count: {nan_count_extreme}")
     except Exception:
         # print(f"  Extremely large radius raised exception: {e}")

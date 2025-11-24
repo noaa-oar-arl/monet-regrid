@@ -152,7 +152,7 @@ class TestPerformanceBenchmarks:
 
             start_time = time.time()
             interpolator = CurvilinearInterpolator(source_grid, target_grid, method="nearest")
-            result = interpolator(test_data)
+            interpolator(test_data)
             elapsed_time = time.time() - start_time
 
             times.append(elapsed_time)
@@ -176,8 +176,8 @@ class TestPerformanceBenchmarks:
         test_data = self._create_test_data(ny, nx, dtype=np.float64)
 
         # Get initial memory estimate (this is approximate)
-        input_size_mb = test_data.nbytes / (1024**2)
-        expected_output_size_mb = (target_grid["latitude"].size * 8) / (1024**2)  # 8 bytes per float64
+        # input_size_mb = test_data.nbytes / (1024**2)
+        # expected_output_size_mb = (target_grid["latitude"].size * 8) / (1024**2)  # 8 bytes per float64
 
         # Perform interpolation
         start_time = time.time()
@@ -260,7 +260,7 @@ class TestOptimizationValidation:
             # Time the operation
             start_time = time.time()
             interpolator = CurvilinearInterpolator(source_grid, target_grid, method="nearest")
-            result = interpolator(test_data)
+            interpolator(test_data)
             elapsed_time = time.time() - start_time
 
             times.append(elapsed_time)
@@ -317,7 +317,7 @@ class TestOptimizationValidation:
         """Test that memory usage patterns are efficient."""
         # Test with different data types
         dtypes = [np.float32, np.float64]
-        sizes = []
+        # sizes = []
 
         for dtype in dtypes:
             ny, nx = 50, 60

@@ -114,10 +114,10 @@ def test_coordinate_mapping():
 
         # Debug: Check grid type detection
         # print("  Debug: Checking grid types...")
-        from monet_regrid.utils import _get_grid_type
+        # from monet_regrid.utils import _get_grid_type
 
-        source_type = _get_grid_type(ds)
-        target_type = _get_grid_type(ds_out)
+        # source_type = _get_grid_type(ds)
+        # target_type = _get_grid_type(ds_out)
         # print(f"    Source grid type: {source_type}")
         # print(f"    Target grid type: {target_type}")
         # print(f"    Source coordinates: {list(ds.coords)}")
@@ -125,11 +125,11 @@ def test_coordinate_mapping():
         # print(f"    Source dims: {list(ds.dims)}")
         # print(f"    Target dims: {list(ds_out.dims)}")
 
-        regridder = ds.regrid.build_regridder(ds_out, method="linear")
+        # regridder = ds.regrid.build_regridder(ds_out, method="linear")
         # print(f"  ✓ Success: {type(regridder).__name__} created")
 
         # Apply regridding using the accessor method (which handles validation properly)
-        result_ds = ds.regrid.linear(ds_out)
+        ds.regrid.linear(ds_out)
         # print("  ✓ Success: Regridding completed")
         # print(f"    Original shape: {ds['test_var'].shape}")
         # print(f"    Result shape: {result_ds['test_var'].shape}")
@@ -162,7 +162,7 @@ def test_backward_compatibility():
         regridder = source_data.regrid.build_regridder(target_grid, method="linear")
         # print(f"  ✓ Success: {type(regridder).__name__} created")
 
-        result = regridder()
+        regridder()
         # print("  ✓ Success: Regridding completed")
         # print(f"    Original shape: {source_data.shape}")
         # print(f"    Result shape: {result.shape}")

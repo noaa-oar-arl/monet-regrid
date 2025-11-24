@@ -302,7 +302,7 @@ class TestSpatialStructureEdgeCases:
         # For now, just test that it doesn't crash immediately
         # The actual handling of empty grids is implementation-specific
         try:
-            interpolator = CurvilinearInterpolator(source_grid, empty_target, method="nearest")
+            CurvilinearInterpolator(source_grid, empty_target, method="nearest")
             # If it succeeds, that's acceptable for now
         except Exception:
             # If it raises an exception, that's also acceptable

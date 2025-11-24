@@ -265,12 +265,12 @@ class TestComponentIntegration:
     def test_regridder_interpolator_integration(self):
         """Test integration between CurvilinearRegridder and CurvilinearInterpolator."""
         # Create test grids and data
-        source_lat = np.array([[0, 1], [0, 1]])
-        source_lon = np.array([[0, 0], [1, 1]])
+        # source_lat = np.array([[0, 1], [0, 1]])
+        # source_lon = np.array([[0, 0], [1, 1]])
         target_lat = np.array([[0.5, 0.7], [0.5, 0.7]])
         target_lon = np.array([[0.5, 0.5], [0.7, 0.7]])
 
-        source_grid = xr.Dataset({"latitude": (["y", "x"], source_lat), "longitude": (["y", "x"], source_lon)})
+        # source_grid = xr.Dataset({"latitude": (["y", "x"], source_lat), "longitude": (["y", "x"], source_lon)})
 
         target_grid = xr.Dataset(
             {"latitude": (["y_target", "x_target"], target_lat), "longitude": (["y_target", "x_target"], target_lon)}

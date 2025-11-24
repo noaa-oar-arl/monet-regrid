@@ -62,7 +62,7 @@ def test_curvilinear_interpolator_coordinates_validation():
     )
 
     # This should work fine
-    interpolator = CurvilinearInterpolator(source_grid, target_grid)
+    CurvilinearInterpolator(source_grid, target_grid)
 
     # Test with 1D coordinates (should now work with our updates)
     rectilinear_source_grid = xr.Dataset({"latitude": (["y"], source_lat), "longitude": (["x"], source_lon)})
