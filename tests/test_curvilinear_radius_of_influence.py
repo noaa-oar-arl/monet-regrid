@@ -12,8 +12,8 @@ from monet_regrid.curvilinear import CurvilinearInterpolator
 def test_curvilinear_nearest_with_radius_of_influence():
     """Test that nearest neighbor interpolation works with radius of influence."""
     # Create a source grid
-    source_lat = np.array([,])
-    source_lon = np.array([[-1, -1],])
+    source_lat = np.array([[0.0, 1.0], [0.0, 1.0]])
+    source_lon = np.array([[-1.0, 0.0], [-1.0, 0.0]])
 
     source_grid = xr.Dataset({"latitude": (["y", "x"], source_lat), "longitude": (["y", "x"], source_lon)})
 

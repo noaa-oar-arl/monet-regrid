@@ -24,7 +24,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 Modifications: Package renamed from xarray-regrid to monet-regrid,
-optimizations, adding curvilinear support, URLs updated, 
+optimizations, adding curvilinear support, URLs updated,
 and documentation adapted for new branding.
 """
 
@@ -381,6 +381,7 @@ class Regridder:
         values: np.ndarray,
         time_dim: str | None = "time",
         fill_value: None | Any = None,
+        nan_threshold: float = 1.0,
     ) -> xr.DataArray:
         """Regrid by taking the most common value within the new grid cells.
 

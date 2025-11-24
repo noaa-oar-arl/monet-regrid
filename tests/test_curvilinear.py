@@ -177,7 +177,7 @@ def test_curvilinear_interpolator_dataset_interpolation():
         {
             "var1": (["y", "x"], data_values),
             "var2": (["y", "x"], data_values * 2),
-            "other_var": ("time",),  # This should be preserved as-is
+            "other_var": (("time",), np.arange(1)),  # This should be preserved as-is
         }
     )
 

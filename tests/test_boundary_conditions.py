@@ -25,10 +25,10 @@ class TestPoleProximityHandling:
         """Set up test data for pole proximity tests."""
         # Create grids near the North Pole
         self.polar_source_lat = np.array([[89.5, 89.6], [89.5, 89.6]])
-        self.polar_source_lon = np.array([,])
+        self.polar_source_lon = np.array([[-135.0, 45.0], [-135.0, 45.0]])
 
         self.polar_target_lat = np.array([[89.55, 89.65], [89.55, 89.65]])
-        self.polar_target_lon = np.array([,])
+        self.polar_target_lon = np.array([[-135.0, 45.0], [-135.0, 45.0]])
 
         self.polar_source_grid = xr.Dataset(
             {"latitude": (["y", "x"], self.polar_source_lat), "longitude": (["y", "x"], self.polar_source_lon)}
@@ -61,10 +61,10 @@ class TestPoleProximityHandling:
         """Test interpolation near the South Pole."""
         # Create grids near the South Pole
         south_source_lat = np.array([[-89.6, -89.5], [-89.6, -89.5]])
-        south_source_lon = np.array([,])
+        south_source_lon = np.array([[-135.0, 45.0], [-135.0, 45.0]])
 
         south_target_lat = np.array([[-89.65, -89.55], [-89.65, -89.55]])
-        south_target_lon = np.array([,])
+        south_target_lon = np.array([[-135.0, 45.0], [-135.0, 45.0]])
 
         south_source_grid = xr.Dataset(
             {"latitude": (["y", "x"], south_source_lat), "longitude": (["y", "x"], south_source_lon)}
@@ -109,7 +109,7 @@ class TestPoleProximityHandling:
         """Test handling of coordinate singularities at poles."""
         # Test with exactly 90 degree latitude
         singular_source_lat = np.array([[90.0, 90.0], [90.0, 90.0]])
-        singular_source_lon = np.array([, [180, -90]])
+        singular_source_lon = np.array([[0.0, 180.0], [0.0, -90.0]])
 
         singular_target_lat = np.array([[90.0]])
         singular_target_lon = np.array([[45.0]])
@@ -148,11 +148,11 @@ class TestDateLineCrossing:
     def setup_method(self):
         """Set up test data for date line tests."""
         # Create grids that cross the International Date Line
-        self.dateline_source_lat = np.array([,])
-        self.dateline_source_lon = np.array([, [-170, -170]])  # Crosses 180°
+        self.dateline_source_lat = np.array([[0.0, 0.0], [0.0, 0.0]])
+        self.dateline_source_lon = np.array([[170.0, -170.0], [170.0, -170.0]])  # Crosses 180°
 
-        self.dateline_target_lat = np.array([,])
-        self.dateline_target_lon = np.array([, [-175, -175]])  # Also crosses 180°
+        self.dateline_target_lat = np.array([[0.0, 0.0], [0.0, 0.0]])
+        self.dateline_target_lon = np.array([[175.0, -175.0], [175.0, -175.0]])  # Also crosses 180°
 
         self.dateline_source_grid = xr.Dataset(
             {"latitude": (["y", "x"], self.dateline_source_lat), "longitude": (["y", "x"], self.dateline_source_lon)}
@@ -185,12 +185,12 @@ class TestDateLineCrossing:
         """Test that longitude wrapping is handled consistently."""
         # Create grids with different longitude representations
         # Grid 1: -180 to 180
-        lon1 = np.array([, [-175, 179]])
+        lon1 = np.array([[175.0, -179.0], [175.0, -179.0]])
 
         # Grid 2: 0 to 360
-        lon2 = np.array([,])
+        lon2 = np.array([[175.0, 181.0], [175.0, 181.0]])
 
-        source_lat = np.array([,])
+        source_lat = np.array([[0.0, 0.0], [0.0, 0.0]])
 
         source_grid_180 = xr.Dataset({"latitude": (["y", "x"], source_lat), "longitude": (["y", "x"], lon1)})
 
@@ -215,8 +215,8 @@ class TestDateLineCrossing:
     def test_antimeridian_continuity(self):
         """Test continuity across the antimeridian."""
         # Create a grid that wraps around the antimeridian
-        source_lat = np.array([,])
-        source_lon = np.array([, [-179, -179]])  # Close to antimeridian
+        source_lat = np.array([[0.0, 0.0], [0.0, 0.0]])
+        source_lon = np.array([[179.0, -179.0], [179.0, -179.0]])  # Close to antimeridian
 
         target_lat = np.array([[0.5, 0.8], [0.5, 0.8]])
         target_lon = np.array([[179.5, 179.5], [-179.5, -179.5]])  # Even closer to antimeridian
@@ -316,8 +316,10 @@ class TestEmptyAndDegenerateGrids:
     def test_degenerate_triangle_handling(self):
         """Test handling of degenerate triangles in triangulation."""
         # Create nearly collinear points that might cause degenerate triangles
-        degenerate_lat = np.array([[0, 0.001, 0.002], [0, 0.001, 0.002], [0, 0.001, 0.002]])
-        degenerate_lon = np.array([, [0.001, 0.001, 0.001], [0.002, 0.002, 0.002]])
+        degenerate_lat = np.array([[0.0, 0.001, 0.002], [0.0, 0.001, 0.002], [0.0, 0.001, 0.002]])
+        degenerate_lon = np.array(
+            [[0.0, 0.0, 0.0], [0.001, 0.001, 0.001], [0.002, 0.002, 0.002]]
+        )
 
         degenerate_source_grid = xr.Dataset(
             {"latitude": (["y", "x"], degenerate_lat), "longitude": (["y", "x"], degenerate_lon)}
@@ -375,8 +377,8 @@ class TestNaNPropagation:
     def setup_method(self):
         """Set up test data for NaN propagation tests."""
         # Create test grids
-        self.source_lat = np.array([,,])
-        self.source_lon = np.array([[-1, -1, -1],,])
+        self.source_lat = np.array([[0.0, 1.0, 2.0], [0.0, 1.0, 2.0], [0.0, 1.0, 2.0]])
+        self.source_lon = np.array([[-1.0, 0.0, 1.0], [-1.0, 0.0, 1.0], [-1.0, 0.0, 1.0]])
 
         self.target_lat = np.array([[0.5, 1.5], [0.5, 1.5]])
         self.target_lon = np.array([[-0.5, -0.5], [0.5, 0.5]])

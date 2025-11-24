@@ -37,11 +37,11 @@ def test_regrid_rectilinear_to_rectilinear_most_common():
         },
         coords={"y": range(6), "x": range(6)},
     )
-    ds_out = xr.Dataset(coords={"y": range(3), "x": range(3)})
+    ds_out = xr.Dataset(coords={"y": np.arange(0.5, 6, 2), "x": np.arange(0.5, 6, 2)})
 
-    ds_out = ds.regrid.most_common(ds_out)
+    ds_out = ds["data"].regrid.most_common(ds_out, np.array([0, 1]))
     expected = np.array([[0, 0, 0], [0, 1, 0], [0, 0, 0]])
-    assert_array_equal(ds_out.data.values, expected)
+    assert_array_equal(ds_out.data, expected)
 
 
 def test_regrid_rectilinear_to_rectilinear_most_common_nan_threshold():
@@ -65,11 +65,11 @@ def test_regrid_rectilinear_to_rectilinear_most_common_nan_threshold():
         },
         coords={"y": range(6), "x": range(6)},
     )
-    ds_out = xr.Dataset(coords={"y": range(3), "x": range(3)})
+    ds_out = xr.Dataset(coords={"y": np.arange(0.5, 6, 2), "x": np.arange(0.5, 6, 2)})
 
-    ds_out = ds.regrid.most_common(ds_out, nan_threshold=0.5)
+    ds_out = ds["data"].regrid.most_common(ds_out, np.array([0, 1]), nan_threshold=0.5)
     expected = np.array([[0, 0, 0], [0, 1, 0], [0, 0, 0]])
-    assert_array_equal(ds_out.data.values, expected)
+    assert_array_equal(ds_out.data, expected)
 
 
 def test_regrid_rectilinear_to_rectilinear_conservative():
@@ -115,7 +115,7 @@ def test_regrid_rectilinear_to_rectilinear_conservative_dataset_and_dataarray():
 
     target_ds = xr.Dataset(coords={"y": range(1), "x": range(1)})
 
-    da_regrid = da.regrid.conservative(target_da)
+    da_regrid = da.regrid.conservative(target_ds)
     ds_regrid = ds.regrid.conservative(target_ds)
 
     assert_array_equal(da_regrid.values, ds_regrid.data.values)
@@ -123,13 +123,21 @@ def test_regrid_rectilinear_to_rectilinear_conservative_dataset_and_dataarray():
 
 def test_regrid_rectilinear_to_rectilinear_conservative_nan_robust():
     """Make sure that the nan thresholding is robust to different chunking."""
-    da = xr.DataArray(np.random.rand(100, 100), dims=("x", "y"))
-    da[da > 0.5] = np.nan
+    da = xr.DataArray(
+        np.random.rand(100, 100),
+        dims=("x", "y"),
+        coords={"x": np.arange(100), "y": np.arange(100)},
+    )
+    da.values[da > 0.5] = np.nan
 
     for nan_threshold in [None, 0.5]:
         da_rechunk = da.chunk(2)
-        da_coarsen = da.coarsen(x=2, y=2).mean(skipna=bool(nan_threshold))
-        regridded = da_rechunk.regrid.conservative(da_coarsen, nan_threshold=nan_threshold)
+        da_coarsen = da.coarsen(x=2, y=2).mean()
+        # Create a dummy target dataset with the same coordinates as the coarsened array
+        ds_target = xr.Dataset(coords=da_coarsen.coords)
+        regridded = da_rechunk.regrid.conservative(
+            ds_target, nan_threshold=0.0 if nan_threshold is None else nan_threshold
+        )
 
         # There are still some differences, this may be due to floating point
         # Not sure how to handle this right now
