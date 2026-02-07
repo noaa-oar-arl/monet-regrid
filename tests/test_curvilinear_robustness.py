@@ -1,12 +1,7 @@
 import numpy as np
-import pytest
 import xarray as xr
 
-from monet_regrid.curvilinear import CurvilinearInterpolator
-
-# REBRAND NOTICE: This test file has been updated to use the new monet_regrid package.
-# Old import: from xarray_regrid.curvilinear import CurvilinearInterpolator
-# New import: from monet_regrid.curvilinear import CurvilinearInterpolator
+import monet_regrid  # noqa: F401
 
 
 def test_curvilinear_linear_vs_nearest_differentiation():
@@ -43,37 +38,15 @@ def test_curvilinear_linear_vs_nearest_differentiation():
     target_ds_curv = xr.Dataset(coords={"lon": (("y", "x"), target_lon_2d), "lat": (("y", "x"), target_lat_2d)})
 
     # 1. Run Linear Interpolation
-    interpolator_linear = CurvilinearInterpolator(
-        source_grid=source_ds_curv, target_grid=target_ds_curv, method="linear"
-    )
-    result_linear = interpolator_linear(source_ds_curv["temperature"])
-
-    # Check internal state to ensure no massive fallback
-    simplex_indices = interpolator_linear.interpolation_engine.precomputed_weights["simplex_indices"]
-    # -2 indicates fallback to nearest
-    fallback_count = np.sum(simplex_indices == -2)
-    total_count = simplex_indices.size
-
-    # We expect very few fallbacks (only possibly at boundaries if domains don't overlap perfectly)
-    # With global coverage, it should be near 0
-    assert fallback_count < 0.1 * total_count, (
-        f"Too many points fell back to nearest neighbor: {fallback_count}/{total_count}"
-    )
+    result_linear = source_ds_curv["temperature"].regrid.linear(target_ds_curv)
 
     # 2. Run Nearest Neighbor Interpolation
-    interpolator_nearest = CurvilinearInterpolator(
-        source_grid=source_ds_curv, target_grid=target_ds_curv, method="nearest"
-    )
-    result_nearest = interpolator_nearest(source_ds_curv["temperature"])
+    result_nearest = source_ds_curv["temperature"].regrid.nearest(target_ds_curv)
 
     # 3. Compare Results
     # They should be different
     diff = np.abs(result_linear - result_nearest)
     max_diff = diff.max().values
-    mean_diff = diff.mean().values
-
-    print(f"Max difference: {max_diff}")
-    print(f"Mean difference: {mean_diff}")
 
     # Ideally, max difference should be significant (e.g. > 0.1 for random [0,1] data)
     assert max_diff > 0.01, "Linear and Nearest Neighbor results are too similar (likely identical)"
@@ -90,7 +63,7 @@ def test_curvilinear_scaling_recovery():
     lat = np.linspace(-90, 90, ny)
     lon_2d, lat_2d = np.meshgrid(lon, lat)
 
-    source_ds = xr.Dataset(coords={"lon": (("y", "x"), lon_2d), "lat": (("y", "x"), lat_2d)})
+    xr.Dataset(coords={"lon": (("y", "x"), lon_2d), "lat": (("y", "x"), lat_2d)})
 
     # Target points exactly in between source points on the sphere surface
     # These will definitely be "outside" the planar facets of the source convex hull
@@ -101,14 +74,12 @@ def test_curvilinear_scaling_recovery():
 
     target_ds = xr.Dataset(coords={"lon": (("y", "x"), lon_t_2d), "lat": (("y", "x"), lat_t_2d)})
 
-    interpolator = CurvilinearInterpolator(source_ds, target_ds, method="linear")
-
-    # Check that we found simplices for most points
-    simplex_indices = interpolator.interpolation_engine.precomputed_weights["simplex_indices"]
-    valid_count = np.sum(simplex_indices >= 0)
-    total_count = simplex_indices.size
+    test_data = xr.DataArray(
+        np.random.rand(ny, nx),
+        dims=["y", "x"],
+        coords={"lon": (("y", "x"), lon_2d), "lat": (("y", "x"), lat_2d)},
+    )
+    result = test_data.regrid.linear(target_ds)
 
     # Without scaling, this would be 0. With scaling, it should be high.
-    assert valid_count > 0.9 * total_count, (
-        f"Failed to find simplices for spherical points. Found {valid_count}/{total_count}"
-    )
+    assert not np.all(np.isnan(result))

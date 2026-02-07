@@ -6,7 +6,7 @@ from numpy.testing import assert_array_equal
 from monet_regrid import Grid, create_regridding_dataset
 
 # REBRAND NOTICE: This test file has been updated to use the new monet_regrid package.
-# Old import: from xarray_regrid import Grid, create_regridding_dataset
+# Old import: from monet_regrid import Grid, create_regridding_dataset
 # New import: from monet_regrid import Grid, create_regridding_dataset
 
 EXP_LABELS = np.array([0, 1, 2, 3])  # labels that are in the dummy data
@@ -152,6 +152,7 @@ def test_oversized_most_common(dummy_lc_data, oversized_dummy_target_grid):
         dummy_lc_data["lc"].regrid.most_common(
             oversized_dummy_target_grid,
             values=EXP_LABELS,
+            fill_value=np.nan,
         ),
         expected["lc"],
     )
@@ -164,7 +165,8 @@ def test_attrs_dataarray(dummy_lc_data, dummy_target_grid):
         values=EXP_LABELS,
     )
     assert da_regrid.attrs != {}
-    assert da_regrid.attrs == dummy_lc_data["lc"].attrs
+    assert all(item in da_regrid.attrs.items() for item in dummy_lc_data["lc"].attrs.items())
+    assert "history" in da_regrid.attrs
     assert da_regrid["longitude"].attrs == dummy_target_grid["longitude"].attrs
 
 
@@ -175,7 +177,8 @@ def test_attrs_dataset(dummy_lc_data, dummy_target_grid):
         values=EXP_LABELS,
     )
     assert ds_regrid.attrs != {}
-    assert ds_regrid.attrs == dummy_lc_data.attrs
+    assert all(item in ds_regrid.attrs.items() for item in dummy_lc_data.attrs.items())
+    assert "history" in ds_regrid.attrs
     assert ds_regrid["longitude"].attrs == dummy_target_grid["longitude"].attrs
 
 

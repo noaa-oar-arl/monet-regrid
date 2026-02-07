@@ -1,10 +1,44 @@
+import dask.array as da
 import numpy as np
+import pandas as pd
 import xarray as xr
 
-from monet_regrid.utils import format_lat
+from monet_regrid.utils import (
+    Grid,
+    create_lat_lon_coords,
+    create_regridding_dataset,
+    format_lat,
+    to_intervalindex,
+)
+
+
+def test_lazy_coordinate_generation():
+    """Test that coordinate generation functions are lazy."""
+    # 1. Define a sample grid
+    grid = Grid(north=90, south=-90, east=180, west=-180, resolution_lat=10.0, resolution_lon=10.0)
+
+    # 2. Test the low-level coordinate generator
+    lat_coords, lon_coords = create_lat_lon_coords(grid)
+    assert isinstance(lat_coords, da.Array)
+    assert isinstance(lon_coords, da.Array)
+
+    # 3. Test the dataset creation function
+    ds = create_regridding_dataset(grid)
+
+    # 4. Verify the computed values are correct as a final check.
+    # Note: We do not assert that the coordinates in the final Dataset are
+    # Dask-backed, because xarray eagerly loads 1D dimension coordinates
+    # into memory as a pandas.Index for performance. The key benefit is that
+    # the coordinate generation itself is lazy, which is asserted above.
+    computed_ds = ds.compute()
+    assert computed_ds["latitude"].values[0] == -90
+    assert computed_ds["latitude"].values[-1] == 90
+    assert computed_ds["longitude"].values[0] == -180
+    assert computed_ds["longitude"].values[-1] == 180
+
 
 # REBRAND NOTICE: This test file has been updated to use the new monet_regrid package.
-# Old import: from xarray_regrid.utils import format_lat
+# Old import: from monet_regrid.utils import format_lat
 # New import: from monet_regrid.utils import format_lat
 
 
@@ -31,3 +65,20 @@ def test_format_lat():
     assert formatted.attrs["foo"] == "bar"
     assert formatted.lat.attrs["is"] == "coord"
     assert formatted.x.attrs["is"] == "data"
+
+
+def test_to_intervalindex():
+    """Test the conversion of a coordinate array to a pandas IntervalIndex."""
+    # Test case with multiple coordinates
+    coords = np.array([10, 20, 30])
+    intervals = to_intervalindex(coords)
+    expected_breaks = [5.0, 15.0, 25.0, 35.0]
+    expected_intervals = pd.IntervalIndex.from_breaks(expected_breaks)
+    pd.testing.assert_index_equal(intervals, expected_intervals)
+    assert len(intervals) == len(coords)
+
+    # Test case with a single coordinate (edge case)
+    coords_single = np.array([10])
+    intervals_single = to_intervalindex(coords_single)
+    expected_intervals_single = pd.IntervalIndex.from_breaks([-np.inf, np.inf])
+    pd.testing.assert_index_equal(intervals_single, expected_intervals_single)

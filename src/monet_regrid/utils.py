@@ -2,9 +2,13 @@ from collections.abc import Callable, Hashable
 from dataclasses import dataclass
 from typing import Any, TypedDict, overload
 
+import cf_xarray  # noqa: F401
+import dask.array as da
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+from monet_regrid.constants import GridType
 
 """
 This file is part of monet-regrid.
@@ -29,16 +33,9 @@ Modifications: Package renamed from xarray-regrid to monet-regrid,
 URLs updated, and documentation adapted for new branding.
 """
 
-from monet_regrid.constants import GridType
 
-# Import cf_xarray to ensure it's registered with xarray
-try:
-    import cf_xarray  # noqa: F401
-except ImportError:
-    pass  # cf_xarray will be imported when needed
-
-
-class InvalidBoundsError(Exception): ...
+class InvalidBoundsError(Exception):
+    ...
 
 
 class CoordHandler(TypedDict):
@@ -71,60 +68,79 @@ class Grid:
     def create_regridding_dataset(self, lat_name: str = "latitude", lon_name: str = "longitude") -> xr.Dataset:
         """Create a dataset to use for regridding.
 
-        Args:
-            grid: Grid object containing the bounds and resolution of the
-                cartesian grid.
-            lat_name: Name for the latitudinal coordinate and dimension.
-                Defaults to "latitude".
-            lon_name: Name for the longitudinal coordinate and dimension.
-                Defaults to "longitude".
+        Parameters
+        ----------
+        lat_name : str, optional
+            Name for the latitudinal coordinate and dimension.
+            Defaults to "latitude".
+        lon_name : str, optional
+            Name for the longitudinal coordinate and dimension.
+            Defaults to "longitude".
 
-        Returns:
+        Returns
+        -------
+        xr.Dataset
             A dataset with the latitude and longitude coordinates corresponding to the
-                specified grid. Contains no data variables.
+            specified grid. Contains no data variables.
         """
         return create_regridding_dataset(self, lat_name, lon_name)
 
 
-def create_lat_lon_coords(grid: Grid) -> tuple[np.ndarray, np.ndarray]:
-    """Create latitude and longitude coordinates based on the provided grid parameters.
+def create_lat_lon_coords(grid: Grid) -> tuple[da.Array, da.Array]:
+    """Create lazily-computed latitude and longitude coordinates.
 
-    Args:
-        grid: Grid object.
+    This function uses Dask to generate coordinate arrays, preventing them from
+    being loaded into memory until they are explicitly computed. This is critical
+    for handling large, high-resolution grids efficiently.
 
-    Returns:
-        Latititude coordinates, longitude coordinates.
+    Parameters
+    ----------
+    grid : Grid
+        A `Grid` object containing the spatial bounds and resolution.
+
+    Returns
+    -------
+    tuple[da.Array, da.Array]
+        A tuple containing the lazily-computed latitude and longitude Dask arrays.
     """
-
     if np.remainder((grid.north - grid.south), grid.resolution_lat) > 0:
-        lat_coords = np.arange(grid.south, grid.north, grid.resolution_lat)
+        lat_coords = da.arange(grid.south, grid.north, grid.resolution_lat)
     else:
-        lat_coords = np.arange(grid.south, grid.north + grid.resolution_lat, grid.resolution_lat)
+        lat_coords = da.arange(grid.south, grid.north + grid.resolution_lat, grid.resolution_lat)
 
-    if np.remainder((grid.east - grid.west), grid.resolution_lat) > 0:
-        lon_coords = np.arange(grid.west, grid.east, grid.resolution_lon)
+    if np.remainder((grid.east - grid.west), grid.resolution_lon) > 0:
+        lon_coords = da.arange(grid.west, grid.east, grid.resolution_lon)
     else:
-        lon_coords = np.arange(grid.west, grid.east + grid.resolution_lon, grid.resolution_lon)
+        lon_coords = da.arange(grid.west, grid.east + grid.resolution_lon, grid.resolution_lon)
+
     return lat_coords, lon_coords
 
 
 def create_regridding_dataset(grid: Grid, lat_name: str = "latitude", lon_name: str = "longitude") -> xr.Dataset:
-    """Create a dataset to use for regridding.
+    """Create a lazy xarray.Dataset for regridding.
 
-    Args:
-        grid: Grid object containing the bounds and resolution of the cartesian grid.
-        lat_name: Name for the latitudinal coordinate and dimension.
-            Defaults to "latitude".
-        lon_name: Name for the longitudinal coordinate and dimension.
-            Defaults to "longitude".
+    This function constructs a dataset containing only coordinate information,
+    which is generated lazily using Dask. This approach is highly memory-efficient
+    for defining large target grids for regridding operations.
 
-    Returns:
-        A dataset with the latitude and longitude coordinates corresponding to the
-            specified grid. Contains no data variables.
+    Parameters
+    ----------
+    grid : Grid
+        A `Grid` object defining the spatial bounds and resolution.
+    lat_name : str, optional
+        The desired name for the latitude coordinate, by default "latitude".
+    lon_name : str, optional
+        The desired name for the longitude coordinate, by default "longitude".
+
+    Returns
+    -------
+    xr.Dataset
+        A dataset with Dask-backed latitude and longitude coordinates and no
+        data variables.
     """
     lat_coords, lon_coords = create_lat_lon_coords(grid)
     return xr.Dataset(
-        {
+        coords={
             lat_name: ([lat_name], lat_coords, {"units": "degrees_north"}),
             lon_name: ([lon_name], lon_coords, {"units": "degrees_east"}),
         }
@@ -132,15 +148,20 @@ def create_regridding_dataset(grid: Grid, lat_name: str = "latitude", lon_name: 
 
 
 def to_intervalindex(coords: np.ndarray) -> pd.IntervalIndex:
-    """Convert a 1-d coordinate array to a pandas IntervalIndex. Take
-    the midpoints between the coordinates as the interval boundaries.
+    """Convert a 1-d coordinate array to a pandas IntervalIndex.
 
-    Args:
-        coords: 1-d array containing the coordinate values.
+    The midpoints between the coordinates are taken as the interval boundaries.
 
-    Returns:
+    Parameters
+    ----------
+    coords : np.ndarray
+        1-d array containing the coordinate values.
+
+    Returns
+    -------
+    pd.IntervalIndex
         A pandas IntervalIndex containing the intervals corresponding to the input
-            coordinates.
+        coordinates.
     """
     if len(coords) > 1:
         midpoints = (coords[:-1] + coords[1:]) / 2
@@ -162,28 +183,51 @@ def to_intervalindex(coords: np.ndarray) -> pd.IntervalIndex:
 def overlap(a: pd.IntervalIndex, b: pd.IntervalIndex) -> np.ndarray:
     """Calculate the overlap between two sets of intervals.
 
-    Args:
-        a: Pandas IntervalIndex containing the first set of intervals.
-        b: Pandas IntervalIndex containing the second set of intervals.
+    The overlap is calculated in a vectorized manner using NumPy broadcasting.
+    To optimize performance, the broadcasting order is chosen based on the relative
+    sizes of the two interval sets.
 
-    Returns:
-        2D numpy array containing overlap (as a fraction) between the intervals of a
-            and b. If there is no overlap, the value will be 0.
+    Parameters
+    ----------
+    a : pd.IntervalIndex
+        The first set of intervals (typically source coordinates).
+    b : pd.IntervalIndex
+        The second set of intervals (typically target coordinates).
+
+    Returns
+    -------
+    np.ndarray
+        A 2D array of shape (len(a), len(b)) containing the overlap length
+        between each pair of intervals.
     """
-    # TODO: newaxis on B and transpose is MUCH faster on benchmark.
-    #  likely due to it being the bigger dimension.
-    #  size(a) > size(b) leads to better perf than size(b) > size(a)
-    mins = np.minimum(a.right.to_numpy(), b.right.to_numpy()[:, np.newaxis])
-    maxs = np.maximum(a.left.to_numpy(), b.left.to_numpy()[:, np.newaxis])
-    overlap: np.ndarray = np.maximum(mins - maxs, 0).T
-    return overlap
+    if len(a) >= len(b):
+        mins = np.minimum(a.right.to_numpy(), b.right.to_numpy()[:, np.newaxis])
+        maxs = np.maximum(a.left.to_numpy(), b.left.to_numpy()[:, np.newaxis])
+        overlap_vals: np.ndarray = np.maximum(mins - maxs, 0).T
+    else:
+        mins = np.minimum(a.right.to_numpy()[:, np.newaxis], b.right.to_numpy())
+        maxs = np.maximum(a.left.to_numpy()[:, np.newaxis], b.left.to_numpy())
+        overlap_vals = np.maximum(mins - maxs, 0)
+
+    return overlap_vals
 
 
 def normalize_overlap(overlap: np.ndarray) -> np.ndarray:
-    """Normalize overlap values so they sum up to 1.0 along the first axis."""
+    """Normalize overlap values so they sum up to 1.0 along the first axis.
+
+    Parameters
+    ----------
+    overlap : np.ndarray
+        2D array of overlap values.
+
+    Returns
+    -------
+    np.ndarray
+        The normalized overlap values.
+    """
     overlap_sum: np.ndarray = overlap.sum(axis=0)
     overlap_sum[overlap_sum == 0] = 1e-12  # Avoid dividing by 0.
-    return overlap / overlap_sum  # type: ignore
+    return overlap / overlap_sum
 
 
 def create_dot_dataarray(
@@ -192,7 +236,24 @@ def create_dot_dataarray(
     target_coords: np.ndarray,
     source_coords: np.ndarray,
 ) -> xr.DataArray:
-    """Create a DataArray to be used at dot product compatible with xr.dot."""
+    """Create a DataArray to be used at dot product compatible with xr.dot.
+
+    Parameters
+    ----------
+    weights : np.ndarray
+        The regridding weights.
+    coord : str
+        The name of the coordinate being regridded.
+    target_coords : np.ndarray
+        The target coordinate values.
+    source_coords : np.ndarray
+        The source coordinate values.
+
+    Returns
+    -------
+    xr.DataArray
+        A DataArray containing the weights and appropriate coordinates.
+    """
     return xr.DataArray(
         data=weights,
         dims=[coord, f"target_{coord}"],
@@ -208,7 +269,22 @@ def common_coords(
     data2: xr.DataArray | xr.Dataset,
     remove_coord: str | None = None,
 ) -> list[Hashable]:
-    """Return a set of coords which two dataset/arrays have in common."""
+    """Return a set of coords which two dataset/arrays have in common.
+
+    Parameters
+    ----------
+    data1 : xr.DataArray | xr.Dataset
+        First xarray object.
+    data2 : xr.DataArray | xr.Dataset
+        Second xarray object.
+    remove_coord : str | None, optional
+        A coordinate name to exclude from the result.
+
+    Returns
+    -------
+    list[Hashable]
+        List of common coordinate names.
+    """
     coords = set(data1.coords).intersection(set(data2.coords))
     if remove_coord in coords:
         coords.remove(remove_coord)
@@ -221,8 +297,26 @@ def call_on_dataset(
     *args: Any,
     **kwargs: Any,
 ) -> xr.DataArray | xr.Dataset:
-    """Use to call a function that expects a Dataset on either a Dataset or
-    DataArray, round-tripping to a temporary dataset."""
+    """Call a function that expects a Dataset on either a Dataset or DataArray.
+
+    This utility handles the round-tripping between DataArray and Dataset.
+
+    Parameters
+    ----------
+    func : Callable[..., xr.Dataset]
+        The function to be called.
+    obj : xr.DataArray | xr.Dataset
+        The input object.
+    *args : Any
+        Positional arguments for `func`.
+    **kwargs : Any
+        Keyword arguments for `func`.
+
+    Returns
+    -------
+    xr.DataArray | xr.Dataset
+        The result of `func`, cast back to the original type of `obj`.
+    """
     placeholder_name = "_UNNAMED_ARRAY"
     if isinstance(obj, xr.DataArray):
         tmp_name = obj.name if obj.name is not None else placeholder_name
@@ -236,7 +330,7 @@ def call_on_dataset(
         msg = "Trying to convert Dataset with more than one data variable to DataArray"
         if len(result.data_vars) > 1:
             raise TypeError(msg)
-        return next(iter(result.data_vars.values())).rename(obj.name)  # type: ignore
+        return next(iter(result.data_vars.values())).rename(obj.name)
 
     return result
 
@@ -246,7 +340,8 @@ def format_for_regrid(
     obj: xr.Dataset,
     target: xr.Dataset,
     stats: bool = False,
-) -> xr.Dataset: ...
+) -> xr.Dataset:
+    ...
 
 
 @overload
@@ -254,7 +349,8 @@ def format_for_regrid(
     obj: xr.DataArray,
     target: xr.Dataset,
     stats: bool = False,
-) -> xr.DataArray: ...
+) -> xr.DataArray:
+    ...
 
 
 def format_for_regrid(
@@ -262,9 +358,27 @@ def format_for_regrid(
     target: xr.Dataset,
     stats: bool = False,
 ) -> xr.DataArray | xr.Dataset:
-    """Apply any pre-formatting to the input dataset to prepare for regridding.
-    Currently handles padding of spherical geometry if lat/lon coordinates can
-    be inferred and the domain size requires boundary padding.
+    """Apply pre-formatting to the input dataset to prepare for regridding.
+
+    Handles padding of spherical geometry if lat/lon coordinates can be inferred
+    and the domain size requires boundary padding. This ensures that the
+    regridding process has full coverage for the target grid.
+
+    Parameters
+    ----------
+    obj : xr.DataArray | xr.Dataset
+        The source data to be formatted.
+    target : xr.Dataset
+        The target grid dataset.
+    stats : bool, optional
+        If True, skip latitude padding as it can alter statistical aggregations.
+        Defaults to False.
+
+    Returns
+    -------
+    xr.DataArray | xr.Dataset
+        The formatted data, potentially with added pole padding or shifted
+        longitude coordinates.
     """
     # Special-cased coordinates with accepted names and formatting function
     coord_handlers: dict[str, CoordHandler] = {
@@ -315,7 +429,12 @@ def format_for_regrid(
                 if len(obj[var].chunksizes.get(coord, ())) == 1:
                     result[var] = result[var].chunk({coord: -1})
 
-    return result  # type: ignore
+    # Update history attribute for provenance
+    history_message = "Pre-formatted data for regridding (pole padding/longitude shift)"
+    existing_history = result.attrs.get("history", "")
+    result.attrs["history"] = f"{existing_history}\n{history_message}" if existing_history else history_message
+
+    return result
 
 
 def format_lat(
@@ -323,20 +442,41 @@ def format_lat(
     target: xr.Dataset,  # noqa ARG001
     formatted_coords: dict[str, str],
 ) -> xr.DataArray | xr.Dataset:
-    """If the latitude coordinate is inferred to be global, defined as having
-    a value within one grid spacing of the poles, and the grid does not natively
-    have values at -90 and 90, add a single value at each pole computed as the
-    mean of the first and last latitude bands. This should be roughly equivalent
-    to the `Pole="all"` option in `ESMF`.
+    """Apply pole padding to the latitude coordinate if it is inferred to be global.
 
-    For example, with a grid spacing of 1 degree, and a source grid ranging from
-    -89.5 to 89.5, the poles would be padded with values at -90 and 90. A grid ranging
-    from -88 to 88 would not be padded because coverage does not extend all the way
-    to the poles. A grid ranging from -90 to 90 would also not be padded because the
-    poles will already be covered in the regridding weights.
+    If the latitude range is nearly global but does not include the poles, this
+    function adds values at -90 and 90 degrees. The values at the poles are
+    computed as the mean of the first and last latitude bands, respectively.
+    This is equivalent to the `Pole="all"` option in `ESMF`.
+
+    Parameters
+    ----------
+    obj : xr.DataArray | xr.Dataset
+        The source data to be formatted.
+    target : xr.Dataset
+        The target grid dataset.
+    formatted_coords : dict[str, str]
+        Dictionary mapping coordinate types (e.g., 'lat') to their names in `obj`.
+
+    Returns
+    -------
+    xr.DataArray | xr.Dataset
+        The data with potential pole padding applied.
+
+    Notes
+    -----
+    Pole padding is only applied to 1D latitude coordinates (rectilinear grids).
+    For 2D coordinates (curvilinear grids), no padding is performed.
     """
     lat_coord = formatted_coords["lat"]
     lon_coord = formatted_coords.get("lon")
+
+    # Check if this is a 2D coordinate (curvilinear grid)
+    if obj.coords[lat_coord].data.ndim == 2:
+        # For curvilinear grids, skip pole padding
+        return obj
+
+    lat_vals = obj.coords[lat_coord].values
 
     # Concat a padded value representing the mean of the first/last lat bands
     # This should match the Pole="all" option of ESMF
@@ -348,21 +488,24 @@ def format_lat(
     # Only pad if global but don't have edge values directly at poles
     # NOTE: could use xr.pad here instead of xr.concat, but none of the
     # modes are an exact fit for this scheme
-    lat_vals = obj.coords[lat_coord].values
+
+    lat_dim = obj[lat_coord].dims[0]
+    lon_dim = obj[lon_coord].dims[0] if lon_coord else None
+
     # South pole
     if dy - polar_lat >= obj.coords[lat_coord].values[0] > -polar_lat:
-        south_pole = obj.isel({lat_coord: 0})
-        if lon_coord is not None:
-            south_pole = south_pole.mean(lon_coord, keep_attrs=True)
-        obj = xr.concat([south_pole, obj], dim=lat_coord)
+        south_pole = obj.isel({lat_dim: 0})
+        if lon_dim is not None:
+            south_pole = south_pole.mean(lon_dim, keep_attrs=True)
+        obj = xr.concat([south_pole, obj], dim=lat_dim)  # type: ignore
         lat_vals = np.concatenate([[-polar_lat], lat_vals])
 
     # North pole
     if polar_lat - dy <= obj.coords[lat_coord].values[-1] < polar_lat:
-        north_pole = obj.isel({lat_coord: -1})
-        if lon_coord is not None:
-            north_pole = north_pole.mean(lon_coord, keep_attrs=True)
-        obj = xr.concat([obj, north_pole], dim=lat_coord)
+        north_pole = obj.isel({lat_dim: -1})
+        if lon_dim is not None:
+            north_pole = north_pole.mean(lon_dim, keep_attrs=True)
+        obj = xr.concat([obj, north_pole], dim=lat_dim)  # type: ignore
         lat_vals = np.concatenate([lat_vals, [polar_lat]])
 
     obj = update_coord(obj, lat_coord, lat_vals)
@@ -371,19 +514,42 @@ def format_lat(
 
 
 def format_lon(
-    obj: xr.DataArray | xr.Dataset, target: xr.Dataset, formatted_coords: dict[str, str]
+    obj: xr.DataArray | xr.Dataset,
+    target: xr.Dataset,
+    formatted_coords: dict[str, str],
 ) -> xr.DataArray | xr.Dataset:
-    """Format the longitude coordinate by shifting the source grid to line up with
-    the target anywhere in the range of -360 to 360, and then add a single wraparound
-    padding column if the domain is inferred to be global and the east or west edges
-    of the target lie outside the source grid centers.
+    """Format the longitude coordinate to align with the target grid.
 
-    For example, with a source grid ranging from 0.5 to 359.5 and a target grid ranging
-    from -180 to 180, the source grid would be shifted to -179.5 to 179.5 and then
-    padded on both the left and right with wraparound values at -180.5 and 180.5 to
-    provide full coverage for the target edge cells at -180 and 180.
+    Shifts the source grid longitude to match the target range and adds
+    wraparound padding if the domain is global and the target extends beyond
+    the source centers.
+
+    Parameters
+    ----------
+    obj : xr.DataArray | xr.Dataset
+        The source data to be formatted.
+    target : xr.Dataset
+        The target grid dataset.
+    formatted_coords : dict[str, str]
+        Dictionary mapping coordinate types (e.g., 'lon') to their names in `obj`.
+
+    Returns
+    -------
+    xr.DataArray | xr.Dataset
+        The data with formatted longitude coordinates.
+
+    Notes
+    -----
+    Longitude formatting is only applied to 1D coordinates (rectilinear grids).
     """
     lon_coord = formatted_coords["lon"]
+
+    # Check if this is a 2D coordinate (curvilinear grid)
+    if obj.coords[lon_coord].data.ndim == 2:
+        # For curvilinear grids, skip longitude formatting
+        return obj
+
+    lon_vals = obj.coords[lon_coord].values
 
     # Find the corresponding longitude coordinate in the target dataset
     target_lon_coord = None
@@ -420,7 +586,7 @@ def format_lon(
         left_pad = int(np.ceil(np.max([left_pad, 0])))
         right_pad = int(np.ceil(np.max([right_pad, 0])))
         obj = obj.pad({lon_coord: (left_pad, right_pad)}, mode="wrap", keep_attrs=True)
-        lon_vals = obj.coords[lon_coord].values
+        lon_vals = obj.coords[lon_coord].values.copy()
         if left_pad:
             lon_vals[:left_pad] = source_lon.values[-left_pad:] - 360
         if right_pad:
@@ -432,7 +598,23 @@ def format_lon(
 
 
 def coord_is_covered(obj: xr.DataArray | xr.Dataset, target: xr.Dataset, coord: Hashable) -> bool:
-    """Check if the source coord fully covers the target coord."""
+    """Check if the source coordinate fully covers the target coordinate.
+
+    Parameters
+    ----------
+    obj : xr.DataArray | xr.Dataset
+        The source data object.
+    target : xr.Dataset
+        The target grid dataset.
+    coord : Hashable
+        The name of the coordinate to check.
+
+    Returns
+    -------
+    bool
+        True if the source coordinate covers the target coordinate range,
+        False otherwise.
+    """
     pad = target[coord].diff(coord).max().values
     left_covered = obj[coord].min() <= target[coord].min() - pad
     right_covered = obj[coord].max() >= target[coord].max() + pad
@@ -440,36 +622,43 @@ def coord_is_covered(obj: xr.DataArray | xr.Dataset, target: xr.Dataset, coord: 
 
 
 @overload
-def ensure_monotonic(obj: xr.DataArray, coord: Hashable) -> xr.DataArray: ...
+def ensure_monotonic(obj: xr.DataArray, coord: Hashable) -> xr.DataArray:
+    ...
 
 
 @overload
-def ensure_monotonic(obj: xr.Dataset, coord: Hashable) -> xr.Dataset: ...
+def ensure_monotonic(obj: xr.Dataset, coord: Hashable) -> xr.Dataset:
+    ...
 
 
 def ensure_monotonic(obj: xr.DataArray | xr.Dataset, coord: Hashable) -> xr.DataArray | xr.Dataset:
     """Ensure that an object has monotonically increasing indexes for a
     given coordinate. Only sort and drop duplicates if needed because this
     requires reindexing which can be expensive."""
-    if not obj.indexes[coord].is_monotonic_increasing:
-        obj = obj.sortby(coord)
-    if not obj.indexes[coord].is_unique:
-        obj = obj.drop_duplicates(coord)
+    # Check if the coordinate is actually an indexed dimension coordinate
+    if coord in obj.indexes and coord in obj.dims:
+        if not obj.indexes[coord].is_monotonic_increasing:
+            obj = obj.sortby(coord)
+        if not obj.indexes[coord].is_unique:
+            obj = obj.drop_duplicates(coord)
     return obj
 
 
 @overload
-def update_coord(obj: xr.DataArray, coord: Hashable, coord_vals: np.ndarray) -> xr.DataArray: ...
+def update_coord(obj: xr.DataArray, coord: Hashable, coord_vals: np.ndarray) -> xr.DataArray:
+    ...
 
 
 @overload
-def update_coord(obj: xr.Dataset, coord: Hashable, coord_vals: np.ndarray) -> xr.Dataset: ...
+def update_coord(obj: xr.Dataset, coord: Hashable, coord_vals: np.ndarray) -> xr.Dataset:
+    ...
 
 
 def update_coord(obj: xr.DataArray | xr.Dataset, coord: Hashable, coord_vals: np.ndarray) -> xr.DataArray | xr.Dataset:
     """Update the values of a coordinate, ensuring indexes stay in sync."""
     attrs = obj.coords[coord].attrs
-    obj = obj.assign_coords({coord: coord_vals})
+    dims = obj.coords[coord].dims
+    obj = obj.assign_coords({coord: (dims, coord_vals)})
     obj.coords[coord].attrs = attrs
     return obj
 
@@ -480,18 +669,23 @@ def _get_grid_type(ds: xr.Dataset) -> GridType:
     Uses cf-xarray to access coordinate information and determine if the grid
     is rectilinear (1D coordinates) or curvilinear (2D coordinates).
 
-    Args:
-        ds: Input xarray dataset
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Input xarray dataset to inspect.
 
-    Returns:
-        GridType: Either GridType.RECTILINEAR or GridType.CURVILINEAR
+    Returns
+    -------
+    GridType
+        Either GridType.RECTILINEAR or GridType.CURVILINEAR.
 
-    Raises:
-        ValueError: If coordinates cannot be identified or if mixed dimensions are found
+    Raises
+    ------
+    ValueError
+        If coordinates cannot be identified or if mixed dimensions are found.
     """
     try:
         # Import cf_xarray to ensure it's registered with xarray
-        import cf_xarray  # noqa: F401
 
         # Access latitude and longitude coordinates using cf-xarray
         try:
@@ -505,26 +699,24 @@ def _get_grid_type(ds: xr.Dataset) -> GridType:
             # Both coordinates should have the same number of dimensions
             if lat_ndim != lon_ndim:
                 msg = f"Mismatched coordinate dimensions: latitude has {lat_ndim} dims, longitude has {lon_ndim} dims"
-                raise ValueError(msg)
+                raise ValueError(msg) from None
 
             # Determine grid type based on dimensionality
             if lat_ndim == 1:
                 return GridType.RECTILINEAR
             elif lat_ndim == 2:
+                # Any 2D coordinates are treated as curvilinear since
+                # rectilinear interpolation expects 1D dimension coordinates
                 return GridType.CURVILINEAR
             else:
                 msg = f"Unsupported coordinate dimensions: {lat_ndim} (expected 1 or 2)"
-                raise ValueError(msg)
+                raise ValueError(msg) from None
 
         except KeyError:
             # Fallback to manual search for coordinate names and check their dimensions
             # Look for coordinates that represent latitude/longitude regardless of name
-            lat_coord_names = [
-                name for name in ds.coords if any(keyword in str(name).lower() for keyword in ["lat", "yc", "y"])
-            ]
-            lon_coord_names = [
-                name for name in ds.coords if any(keyword in str(name).lower() for keyword in ["lon", "xc", "x"])
-            ]
+            lat_coord_names = [name for name in ds.coords if any(keyword in str(name).lower() for keyword in ["lat", "yc", "y"])]
+            lon_coord_names = [name for name in ds.coords if any(keyword in str(name).lower() for keyword in ["lon", "xc", "x"])]
 
             # If we have both lat and lon coordinates, check their dimensions
             if lat_coord_names and lon_coord_names:
@@ -537,19 +729,32 @@ def _get_grid_type(ds: xr.Dataset) -> GridType:
 
                 # Both coordinates should have the same number of dimensions
                 if lat_ndim != lon_ndim:
-                    msg = (
-                        f"Mismatched coordinate dimensions: latitude has {lat_ndim} dims, longitude has {lon_ndim} dims"
-                    )
-                    raise ValueError(msg)
+                    msg = f"Mismatched coordinate dimensions: latitude has {lat_ndim} dims, longitude has {lon_ndim} dims"
+                    raise ValueError(msg) from None
 
                 # Determine grid type based on dimensionality
                 if lat_ndim == 1:
                     return GridType.RECTILINEAR
                 elif lat_ndim == 2:
-                    return GridType.CURVILINEAR
+                    # Check if 2D coordinates are actually just meshgrid of 1D coordinates
+                    # In such cases, we should still treat them as rectilinear
+                    try:
+                        # For true rectilinear grids with 2D coordinates,
+                        # lat varies only along one dimension and lon varies only along another
+                        # Check if latitude is constant along the second axis (x-direction)
+                        np.any(np.diff(lat_coord.values, axis=1) != 0)
+                        # Check if longitude is constant along the first axis (y-direction)
+                        np.any(np.diff(lon_coord.values, axis=0) != 0)
+
+                        # If lat only varies in y and lon only varies in x, it's still
+                        # treated as curvilinear since rectilinear interpolation expects 1D coordinates
+                        return GridType.CURVILINEAR
+                    except (IndexError, AttributeError):
+                        # If we can't determine, default to curvilinear for safety
+                        return GridType.CURVILINEAR
                 else:
                     msg = f"Unsupported coordinate dimensions: {lat_ndim} (expected 1 or 2)"
-                    raise ValueError(msg)
+                    raise ValueError(msg) from None
             else:
                 # If we don't have lat/lon or x/y named coordinates, try to identify coordinates by their dimensions
                 # Look for coordinates that have 2 dimensions (which would indicate curvilinear)
@@ -560,17 +765,9 @@ def _get_grid_type(ds: xr.Dataset) -> GridType:
                     coord_var = ds[coord_name]
                     if coord_var.ndim == 2:
                         # If we find 2D coordinates, check if they look like latitude/longitude
-                        if (
-                            "lat" in str(coord_name).lower()
-                            or "yc" in str(coord_name).lower()
-                            or "y" in str(coord_name).lower()
-                        ):
+                        if "lat" in str(coord_name).lower() or "yc" in str(coord_name).lower() or "y" in str(coord_name).lower():
                             potential_lat_coords.append(coord_name)
-                        elif (
-                            "lon" in str(coord_name).lower()
-                            or "xc" in str(coord_name).lower()
-                            or "x" in str(coord_name).lower()
-                        ):
+                        elif "lon" in str(coord_name).lower() or "xc" in str(coord_name).lower() or "x" in str(coord_name).lower():
                             potential_lon_coords.append(coord_name)
 
                 # If we still don't have any lat/lon coords, look for any 2D coordinates
@@ -597,7 +794,7 @@ def _get_grid_type(ds: xr.Dataset) -> GridType:
                         return GridType.CURVILINEAR
                     else:
                         msg = f"Coordinates found but not both 2D: lat={lat_coord.ndim}D, lon={lon_coord.ndim}D"
-                        raise ValueError(msg)
+                        raise ValueError(msg) from None
                 else:
                     # If we still can't find them, try to find any 1D coordinates that look like lat/lon
                     for coord_name in ds.coords:
@@ -625,29 +822,37 @@ def _get_grid_type(ds: xr.Dataset) -> GridType:
                                 if lat_1d_names and lon_1d_names:
                                     return GridType.RECTILINEAR
 
-                    raise ValueError("No latitude or longitude coordinates found")
+                    msg = "No latitude or longitude coordinates found"
+                    raise ValueError(msg) from None
 
     except (KeyError, ValueError) as e:
         msg = f"Could not identify coordinate: {e}"
         raise ValueError(msg) from e
-    except AttributeError:
+    except AttributeError as e:
         # cf-xarray might not be available or coordinates not properly defined
         msg = "cf-xarray coordinate detection failed - coordinates not properly defined"
-        raise ValueError(msg)
+        raise ValueError(msg) from e
 
 
 def validate_grid_compatibility(source_ds: xr.Dataset, target_ds: xr.Dataset) -> tuple[GridType, GridType]:
     """Validate that both source and target grids have supported types.
 
-    Args:
-        source_ds: Source dataset
-        target_ds: Target dataset
+    Parameters
+    ----------
+    source_ds : xr.Dataset
+        Source dataset.
+    target_ds : xr.Dataset
+        Target dataset.
 
-    Returns:
-        Tuple of (source_grid_type, target_grid_type)
+    Returns
+    -------
+    tuple[GridType, GridType]
+        Tuple of (source_grid_type, target_grid_type).
 
-    Raises:
-        ValueError: If either grid has an unsupported type
+    Raises
+    ------
+    ValueError
+        If either grid has an unsupported type.
     """
     source_type = _get_grid_type(source_ds)
     target_type = _get_grid_type(target_ds)
@@ -662,3 +867,185 @@ def validate_grid_compatibility(source_ds: xr.Dataset, target_ds: xr.Dataset) ->
         raise ValueError(msg)
 
     return source_type, target_type
+
+
+@overload
+def validate_input(
+    data: xr.Dataset,
+    ds_target_grid: xr.Dataset,
+    time_dim: str | None,
+) -> xr.Dataset:
+    ...
+
+
+@overload
+def validate_input(
+    data: xr.DataArray,
+    ds_target_grid: xr.Dataset,
+    time_dim: str | None,
+) -> xr.Dataset:
+    ...
+
+
+def validate_input(
+    data: xr.DataArray | xr.Dataset,
+    ds_target_grid: xr.Dataset,
+    time_dim: str | None,
+) -> xr.Dataset:
+    """Validate and prepare the target grid for regridding.
+
+    This function identifies the spatial coordinates in the source and target
+    grids and constructs a new, validated target grid. It ensures that any
+    non-spatial coordinates (like 'time') from the original target grid are
+    preserved.
+
+    Parameters
+    ----------
+    data : xr.DataArray | xr.Dataset
+        The source DataArray or Dataset.
+    ds_target_grid : xr.Dataset
+        The target grid Dataset.
+    time_dim : str | None
+        The name of the time dimension, if any.
+
+    Returns
+    -------
+    xr.Dataset
+        A new xr.Dataset representing the validated target grid.
+    """
+    _, _ = identify_cf_coordinates(data)  # Fails early if source coords are missing
+    target_lat, target_lon = identify_cf_coordinates(ds_target_grid)
+
+    validated_coords = {
+        target_lat: ds_target_grid[target_lat],
+        target_lon: ds_target_grid[target_lon],
+    }
+
+    # Add all other coordinates from the target grid that are not the identified
+    # spatial coordinates. This preserves dimensions like 'time'.
+    for coord_name, coord_da in ds_target_grid.coords.items():
+        if coord_name not in [target_lat, target_lon]:
+            validated_coords[coord_name] = coord_da
+
+    # Ensure the specified time_dim is included if it exists. This is slightly
+    # redundant with the loop above but acts as a safeguard.
+    if time_dim and time_dim in ds_target_grid.coords:
+        validated_coords[time_dim] = ds_target_grid[time_dim]
+
+    return xr.Dataset(coords=validated_coords)
+
+
+def _create_cache_key(data: xr.DataArray | xr.Dataset, time_dim: str | None = None) -> tuple:
+    """Create a stable cache key from an xarray object's metadata.
+
+    This key is based on the coordinates and dimensions, making it suitable for
+    caching operations that depend on the grid structure rather than the data values.
+    It uses a sampling strategy for large coordinates to avoid breaking laziness.
+
+    Parameters
+    ----------
+    data : xr.DataArray | xr.Dataset
+        The xarray DataArray or Dataset.
+    time_dim : str | None, optional
+        The name of the time dimension, if any. Defaults to None.
+
+    Returns
+    -------
+    tuple
+        A hashable tuple that serves as a cache key.
+    """
+    coord_infos = []
+    for name, coord in data.coords.items():
+        # For small coordinates, using tobytes() is safe and very accurate
+        # For large coordinates, it triggers computation and is slow
+        if coord.size < 1000:
+            coord_val = coord.values.tobytes()
+        else:
+            # Use sampling for large coordinates to maintain laziness
+            # We take a few points from the start, middle, and end
+            n = coord.size
+            if coord.chunks is not None:
+                # If dask-backed, use a strategy that doesn't trigger full compute
+                indices = [0, n // 2, n - 1]
+                sample = []
+                # Flatten the data array to 1D for consistent indexing
+                flat_coord = coord.data.ravel()
+                for idx in indices:
+                    # Use a small slice and compute only that
+                    sample.append(float(flat_coord[idx : idx + 1].compute()[0]))
+                coord_val = tuple(sample)
+            else:
+                # If numpy-backed, we can sample easily
+                flat_vals = coord.values.ravel()
+                indices = [0, n // 4, n // 2, 3 * n // 4, n - 1]
+                coord_val = tuple(float(flat_vals[idx]) for idx in indices)
+
+        coord_infos.append((name, coord.shape, coord.dtype, coord_val))
+
+    coords_key = frozenset(coord_infos)
+    dims_key = tuple(sorted(data.dims))
+
+    return (coords_key, dims_key, time_dim)
+
+
+def identify_cf_coordinates(ds: xr.Dataset) -> tuple[str, str]:
+    """Identify latitude and longitude coordinates using a fallback strategy.
+
+    This function attempts to find the names of the latitude and longitude
+    coordinates in a given xarray Dataset. It uses a hybrid strategy:
+
+    1.  **CF-xarray:** First, it tries to use the `cf-xarray` accessor to
+        identify coordinates based on CF (Climate and Forecast) conventions
+        (e.g., 'latitude', 'longitude').
+    2.  **Fallback:** If `cf-xarray` fails, it falls back to a predefined
+        list of common, non-standard names (e.g., 'lat', 'lon', 'yc', 'xc', 'y', 'x').
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        The dataset to inspect.
+
+    Returns
+    -------
+    tuple[str, str]
+        A tuple containing the identified names for the latitude and longitude
+        coordinates, respectively.
+
+    Raises
+    ------
+    ValueError
+        If either the latitude or longitude coordinate cannot be identified
+        through any of the fallback strategies.
+    """
+    # Try standard CF names first
+    try:
+        lat_name = ds.cf["latitude"].name
+    except KeyError:
+        try:
+            lat_name = ds.cf["lat"].name
+        except KeyError:
+            # Fallback to common non-CF names
+            lat_candidates = [
+                name for name in ds.coords if any(keyword in str(name).lower() for keyword in ["latitude", "lat", "yc", "y"])
+            ]
+            if not lat_candidates:
+                msg = "Could not identify latitude coordinate"
+                raise ValueError(msg) from None
+            lat_name = lat_candidates[0]
+
+    try:
+        lon_name = ds.cf["longitude"].name
+    except KeyError:
+        try:
+            lon_name = ds.cf["lon"].name
+        except KeyError:
+            # Fallback to common non-CF names
+            lon_candidates = [
+                name for name in ds.coords if any(keyword in str(name).lower() for keyword in ["longitude", "lon", "xc", "x"])
+            ]
+            if not lon_candidates:
+                msg = "Could not identify longitude coordinate"
+                raise ValueError(msg) from None
+            lon_name = lon_candidates[0]
+
+    return str(lat_name), str(lon_name)

@@ -1,19 +1,47 @@
-from pathlib import Path
+import warnings
 
+try:
+    from dask.array.core import PerformanceWarning
+except ImportError:
+    PerformanceWarning = None
+
+import dask.array as da
 import numpy as np
 import pytest
 import xarray as xr
 from numpy.testing import assert_array_equal
 
 import monet_regrid
+from monet_regrid.core import CurvilinearRegridder
+
 try:
     import xesmf
 except ImportError:
     xesmf = None
 
+import pandas as pd
+
 # REBRAND NOTICE: This test file has been updated to use the new monet_regrid package.
-# Old import: import xarray_regrid
-# New import: import monet_regrid
+
+
+def test_regrid_rectilinear_to_rectilinear_time_dim():
+    """Test that regridding works when the target grid has a time dimension."""
+    ds = xr.Dataset(
+        {"data": (("y", "x"), np.array([[1, 1], [1, 1]]))},
+        coords={"y": range(2), "x": range(2)},
+    )
+    ds_out = xr.Dataset(
+        coords={
+            "y": range(1),
+            "x": range(1),
+            "time": pd.to_datetime(["2024-07-26", "2024-07-27"]),
+        }
+    )
+
+    ds_regrid = ds.regrid.linear(ds_out)
+    assert "time" in ds_regrid.dims
+    assert len(ds_regrid.time) == 2
+    xr.testing.assert_allclose(ds_regrid["data"], xr.ones_like(ds_regrid["data"]))
 
 
 def test_regrid_rectilinear_to_rectilinear_most_common():
@@ -111,7 +139,7 @@ def test_regrid_rectilinear_to_rectilinear_conservative_dataset_and_dataarray():
 
     ds = xr.Dataset({"data": da})
 
-    target_da = xr.DataArray(dims=("y", "x"), coords={"y": range(1), "x": range(1)})
+    xr.DataArray(dims=("y", "x"), coords={"y": range(1), "x": range(1)})
 
     target_ds = xr.Dataset(coords={"y": range(1), "x": range(1)})
 
@@ -135,9 +163,16 @@ def test_regrid_rectilinear_to_rectilinear_conservative_nan_robust():
         da_coarsen = da.coarsen(x=2, y=2).mean()
         # Create a dummy target dataset with the same coordinates as the coarsened array
         ds_target = xr.Dataset(coords=da_coarsen.coords)
-        regridded = da_rechunk.regrid.conservative(
-            ds_target, nan_threshold=0.0 if nan_threshold is None else nan_threshold
-        )
+
+        # Optimize chunking to avoid PerformanceWarning
+        # Suppress potential PerformanceWarning from Dask
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=UserWarning)
+            if PerformanceWarning:
+                warnings.filterwarnings("ignore", category=PerformanceWarning)
+
+            da_rechunk.regrid.conservative(ds_target, nan_threshold=0.0 if nan_threshold is None else nan_threshold)
 
         # There are still some differences, this may be due to floating point
         # Not sure how to handle this right now
@@ -174,3 +209,104 @@ def test_regrid_rectilinear_to_rectilinear_conservative_xesmf_equivalence():
             # Not sure why there is a difference here.
             # xr.testing.assert_equal(data_regrid.isnull(), data_esmf.isnull())
             pass
+
+
+def test_curvilinear_regridder_lazy_coordinate_creation():
+    """Verify that fallback coordinates are created lazily for Dask arrays."""
+    # 1. Create a large, dask-chunked DataArray without explicit coordinates
+    source_data = xr.DataArray(
+        da.random.random((100, 200), chunks=(50, 50)),
+        dims=["y", "x"],
+    )
+
+    # 2. Create a simple target grid
+    target_grid = xr.Dataset(
+        coords={
+            "lat": (("y_new",), np.arange(0, 10)),
+            "lon": (("x_new",), np.arange(0, 20)),
+        }
+    )
+
+    # 3. Instantiate the regridder
+    regridder = CurvilinearRegridder(source_data=source_data, target_grid=target_grid)
+
+    # 4. Call the internal method to generate the source grid
+    source_grid = regridder._create_source_grid_from_data(source_data)
+
+    # 5. Assert that the coordinates are Dask arrays
+    assert isinstance(source_grid["latitude"].data, da.Array)
+    assert isinstance(source_grid["longitude"].data, da.Array)
+
+
+def test_curvilinear_regridder_lazy_coordinate_creation_with_correct_dims():
+    """Verify that fallback coordinates have the correct (y, x) dimension order."""
+    # 1. Create a dask-chunked DataArray without explicit coordinates
+    source_data = xr.DataArray(
+        da.random.random((10, 20), chunks=(5, 10)),
+        dims=["y", "x"],
+    )
+
+    # 2. Instantiate a mock regridder to isolate the method
+    class MockRegridder(CurvilinearRegridder):
+        def __init__(self):
+            self.source_data = source_data
+
+    regridder = MockRegridder()
+
+    # 3. Call the internal method to generate the source grid
+    source_grid = regridder._create_source_grid_from_data(source_data)
+
+    # 4. Assert that the dimensions are in the correct order ('y', 'x')
+    assert source_grid["latitude"].dims == ("y", "x")
+    assert source_grid["longitude"].dims == ("y", "x")
+
+
+def test_build_regridder_factory():
+    """Test the factory function for building the correct regridder."""
+    ds = xr.Dataset(
+        {"data": (("y", "x"), np.array([[1, 1], [1, 1]]))},
+        coords={"y": range(2), "x": range(2)},
+    )
+    ds_out = xr.Dataset(coords={"y": range(1), "x": range(1)})
+
+    # Test that "linear" method returns a RectilinearRegridder for rectilinear grids
+    regridder_linear = ds.regrid.build_regridder(ds_out, method="linear")
+    assert isinstance(regridder_linear, monet_regrid.RectilinearRegridder)
+
+    # Test that "conservative" method also returns a RectilinearRegridder
+    regridder_conservative = ds.regrid.build_regridder(ds_out, method="conservative")
+    assert isinstance(regridder_conservative, monet_regrid.RectilinearRegridder)
+
+
+def test_curvilinear_regridder_lazy_arange_creation():
+    """Verify that fallback coordinates are created lazily using da.arange."""
+    # 1. Create a Dask-chunked DataArray without explicit coordinates
+    source_data = xr.DataArray(
+        da.random.random((100, 200), chunks=(50, 50)),
+        dims=["y", "x"],
+    )
+
+    # 2. Create a simple target grid
+    target_grid = xr.Dataset(
+        coords={
+            "lat": (("y_new",), np.arange(0, 10)),
+            "lon": (("x_new",), np.arange(0, 20)),
+        }
+    )
+
+    # 3. Instantiate the regridder
+    regridder = CurvilinearRegridder(source_data=source_data, target_grid=target_grid)
+
+    # 4. Call the internal method to generate the source grid
+    source_grid = regridder._create_source_grid_from_data(source_data)
+
+    # 5. Assert that the coordinates are Dask arrays from da.arange
+    assert isinstance(source_grid["latitude"].data, da.Array)
+    assert isinstance(source_grid["longitude"].data, da.Array)
+
+    # 6. Verify the computed values are correct after broadcasting
+    expected_lat = np.broadcast_to(np.arange(100)[:, np.newaxis], (100, 200))
+    assert_array_equal(source_grid["latitude"].data.compute(), expected_lat)
+
+    expected_lon = np.broadcast_to(np.arange(200), (100, 200))
+    assert_array_equal(source_grid["longitude"].data.compute(), expected_lon)

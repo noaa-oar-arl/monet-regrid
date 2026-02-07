@@ -1,13 +1,17 @@
 """Conservative regridding implementation."""
 
+from __future__ import annotations
+
 from collections.abc import Hashable
 from typing import overload
 
 import numpy as np
 import xarray as xr
 
+from monet_regrid import utils
+
 try:
-    import sparse  # type: ignore
+    import sparse
 except ImportError:
     sparse = None
 
@@ -34,8 +38,6 @@ Modifications: Package renamed from xarray-regrid to monet-regrid,
 URLs updated, and documentation adapted for new branding.
 """
 
-from monet_regrid import utils
-
 
 @overload
 def conservative_regrid(
@@ -45,7 +47,8 @@ def conservative_regrid(
     skipna: bool = True,
     nan_threshold: float = 1.0,
     output_chunks: dict[Hashable, int] | None = None,
-) -> xr.DataArray: ...
+) -> xr.DataArray:
+    ...
 
 
 @overload
@@ -56,7 +59,8 @@ def conservative_regrid(
     skipna: bool = True,
     nan_threshold: float = 1.0,
     output_chunks: dict[Hashable, int] | None = None,
-) -> xr.Dataset: ...
+) -> xr.Dataset:
+    ...
 
 
 def conservative_regrid(
@@ -69,30 +73,33 @@ def conservative_regrid(
 ) -> xr.DataArray | xr.Dataset:
     """Refine a dataset using conservative regridding.
 
-    The method implementation is based on a post by Stephan Hoyer; "For the case of
-    interpolation between rectilinear grids (even on the sphere), you can factorize
-    regridding along each axis. This is less general but makes the entire calculation
-    much simpler, because its feasible to store interpolation weights as dense matrices
-    and to use dense matrix multiplication."
-    https://discourse.pangeo.io/t/conservative-region-aggregation-with-xarray-geopandas-and-sparse/2715/3
+    The method implementation is based on a post by Stephan Hoyer:
+    "For the case of interpolation between rectilinear grids (even on the sphere),
+    you can factorize regridding along each axis. This is less general but makes
+    the entire calculation much simpler, because its feasible to store
+    interpolation weights as dense matrices and to use dense matrix multiplication."
+    https://discourse.pangeo.io/t/conservative-region-aggregation-with-xarray-geopandas-and-sparse/2715
 
-    Args:
-        data: Input dataset.
-        target_ds: Dataset which coordinates the input dataset should be regrid to.
-        latitude_coord: Name of the latitude coordinate. If not provided, attempt to
-            infer it from the first coordinate equaling the string 'lat' or 'latitude'.
-        skipna: If True, enable handling for NaN values. This adds some overhead,
-            so should be disabled for optimal performance on data without NaNs.
-        nan_threshold: Threshold value that will retain any output points containing
-            at least this many non-null input points. The default value is 1.0,
-            which will keep output points containing any non-null inputs. The threshold
-            is applied sequentially to each dimension, and may produce different results
-            than a threshold applied concurrently to all regridding dimensions.
-        output_chunks: Optional dictionary of explicit chunk sizes for the output data.
-            If not provided, the output will be chunked the same as the input data.
+    Parameters
+    ----------
+    data : xr.DataArray | xr.Dataset
+        Input dataset to be regridded.
+    target_ds : xr.Dataset
+        Dataset containing the target coordinates.
+    latitude_coord : str | Hashable | None
+        Name of the latitude coordinate. If None, it will be inferred.
+    skipna : bool, optional
+        If True, handle NaN values during regridding. Defaults to True.
+    nan_threshold : float, optional
+        Threshold for keeping output points based on valid input points.
+        Defaults to 1.0.
+    output_chunks : dict[Hashable, int] | None, optional
+        Explicit chunk sizes for the output data. Defaults to None.
 
-    Returns:
-        Regridded input dataset
+    Returns
+    -------
+    xr.DataArray | xr.Dataset
+        Regridded input dataset.
     """
     # Attempt to infer the latitude coordinate
     if latitude_coord is None:
@@ -121,18 +128,44 @@ def conservative_regrid(
 
     regridded_data = regridded_data.reindex_like(target_ds, copy=False)
 
-    return regridded_data  # type: ignore
+    # Update history attribute for provenance
+    history_message = "Regridded using conservative method"
+    existing_history = regridded_data.attrs.get("history", "")
+    regridded_data.attrs["history"] = f"{existing_history}\n{history_message}" if existing_history else history_message
+
+    return regridded_data
 
 
 def conservative_regrid_dataset(
     data: xr.Dataset,
     coords: dict[Hashable, xr.DataArray],
-    latitude_coord: Hashable,
+    latitude_coord: Hashable | None,
     skipna: bool,
     nan_threshold: float,
     output_chunks: dict[Hashable, int] | None = None,
 ) -> xr.Dataset:
-    """Dataset implementation of the conservative regridding method."""
+    """Dataset implementation of the conservative regridding method.
+
+    Parameters
+    ----------
+    data : xr.Dataset
+        The input dataset to be regridded.
+    coords : dict[Hashable, xr.DataArray]
+        Dictionary of target coordinates.
+    latitude_coord : Hashable | None
+        Name of the latitude coordinate.
+    skipna : bool
+        If True, handle NaN values.
+    nan_threshold : float
+        Threshold for valid data.
+    output_chunks : dict[Hashable, int] | None, optional
+        Explicit chunk sizes for output. Defaults to None.
+
+    Returns
+    -------
+    xr.Dataset
+        The regridded dataset.
+    """
     data_vars = dict(data.data_vars)
     data_coords = dict(data.coords)
     data_attrs = {v: data_vars[v].attrs for v in data_vars}
@@ -142,11 +175,11 @@ def conservative_regrid_dataset(
     # Create weights array and coverage mask for each regridding dim
     weights = {}
     covered = {}
-    for coord in coords:  # noqa: PLC0206
-        covered[coord] = (coords[coord] <= data[coord].max()) & (coords[coord] >= data[coord].min())
+    for coord, coord_array in coords.items():
+        covered[coord] = (coord_array <= data[coord].max()) & (coord_array >= data[coord].min())
 
-        target_coords = coords[coord].to_numpy()
-        source_coords = data[coord].to_numpy()
+        target_coords = coord_array.values
+        source_coords = data[coord].values
         nd_weights = get_weights(source_coords, target_coords)
 
         da_weights = utils.create_dot_dataarray(nd_weights, str(coord), target_coords, source_coords)
@@ -156,21 +189,21 @@ def conservative_regrid_dataset(
         weights[coord] = da_weights
 
     # Apply the weights, using a unique set that matches chunking of each array
-    for array in data_vars.keys():  # noqa: PLC0206
+    for array, data_array in data_vars.items():
         var_weights = {}
         for coord, weight_array in weights.items():
-            var_input_chunks = data_vars[array].chunksizes.get(coord)
+            var_input_chunks = data_array.chunksizes.get(coord)
             var_output_chunks = output_chunks.get(coord) if output_chunks else None
             var_weights[coord] = format_weights(
                 weight_array,
                 coord,
-                data_vars[array].dtype,
+                data_array.dtype,
                 var_input_chunks,
                 var_output_chunks,
             )
 
         data_vars[array] = apply_weights(
-            da=data_vars[array],
+            da=data_array,
             weights=var_weights,
             skipna=skipna,
             nan_threshold=nan_threshold,
@@ -203,7 +236,24 @@ def apply_weights(
     skipna: bool,
     nan_threshold: float,
 ) -> xr.DataArray:
-    """Apply the weights over all regridding dimensions simultaneously with `xr.dot`."""
+    """Apply the weights over all regridding dimensions simultaneously with `xr.dot`.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        The input DataArray to be regridded.
+    weights : dict[Hashable, xr.DataArray]
+        Dictionary of weight matrices for each dimension.
+    skipna : bool
+        If True, handle NaN values.
+    nan_threshold : float
+        Threshold for valid data.
+
+    Returns
+    -------
+    xr.DataArray
+        The regridded DataArray.
+    """
     coords = list(weights.keys())
     weight_arrays = list(weights.values())
 
@@ -223,7 +273,18 @@ def apply_weights(
 
 def get_valid_threshold(nan_threshold: float) -> float:
     """Invert the nan_threshold and coerce it to just above zero and below
-    one to handle numerical precision limitations in the weight sum."""
+    one to handle numerical precision limitations in the weight sum.
+
+    Parameters
+    ----------
+    nan_threshold : float
+        The threshold for NaN values (0 to 1).
+
+    Returns
+    -------
+    float
+        The adjusted threshold.
+    """
     # This matches xesmf where na_thresh=0 keeps points with any valid data
     valid_threshold: float = 1 - np.clip(nan_threshold, 1e-6, 1.0 - 1e-6)
     return valid_threshold
@@ -232,12 +293,17 @@ def get_valid_threshold(nan_threshold: float) -> float:
 def get_weights(source_coords: np.ndarray, target_coords: np.ndarray) -> np.ndarray:
     """Determine the weights to map from the old coordinates to the new coordinates.
 
-    Args:
-        source_coords: Source coordinates (center points)
-        target_coords Target coordinates (center points)
+    Parameters
+    ----------
+    source_coords : np.ndarray
+        Source coordinates (center points).
+    target_coords : np.ndarray
+        Target coordinates (center points).
 
-    Returns:
-        Weights, which can be used with a dot product to apply the conservative regrid.
+    Returns
+    -------
+    np.ndarray
+        Weights matrix of shape (len(source_coords), len(target_coords)).
     """
     target_intervals = utils.to_intervalindex(target_coords)
     source_intervals = utils.to_intervalindex(source_coords)
@@ -247,28 +313,57 @@ def get_weights(source_coords: np.ndarray, target_coords: np.ndarray) -> np.ndar
 
 
 def apply_spherical_correction(dot_array: xr.DataArray, latitude_coord: Hashable) -> xr.DataArray:
-    """Apply a sperical earth correction on the prepared dot product weights."""
-    da = dot_array.copy()
-    latitude_res = float(np.median(np.diff(dot_array[latitude_coord].to_numpy(), 1)))
-    lat_weights = lat_weight(dot_array[latitude_coord].to_numpy(), latitude_res)
-    da.values = utils.normalize_overlap(dot_array.values * lat_weights[:, np.newaxis])
-    return da  # type: ignore
+    """Apply a spherical earth correction on the prepared dot product weights.
+
+    Parameters
+    ----------
+    dot_array : xr.DataArray
+        The weight matrix for the latitude dimension.
+    latitude_coord : Hashable
+        Name of the latitude coordinate.
+
+    Returns
+    -------
+    xr.DataArray
+        Spherical-corrected weight matrix.
+    """
+    latitude_res = float(np.median(np.diff(dot_array[latitude_coord].values, 1)))
+    lat_weights_np = lat_weight(dot_array[latitude_coord].values, latitude_res)
+
+    # Convert weights to DataArray for vectorized arithmetic
+    da_lat_weights = xr.DataArray(
+        lat_weights_np,
+        dims=[latitude_coord],
+        coords={latitude_coord: dot_array[latitude_coord]},
+    )
+
+    # Use xarray arithmetic to maintain potential laziness/provenance
+    corrected_weights = dot_array * da_lat_weights
+
+    # Normalize along the source latitude dimension (latitude_coord) to ensure
+    # that each target cell's weights sum to 1.0.
+    return corrected_weights / corrected_weights.sum(dim=latitude_coord)
 
 
 def lat_weight(latitude: np.ndarray, latitude_res: float) -> np.ndarray:
     """Return the weight of gridcells based on their latitude.
 
-    Args:
-        latitude: (Center) latitude values of the gridcells, in degrees.
-        latitude_res: Resolution/width of the grid cells, in degrees.
+    Parameters
+    ----------
+    latitude : np.ndarray
+        (Center) latitude values of the gridcells, in degrees.
+    latitude_res : float
+        Resolution/width of the grid cells, in degrees.
 
-    Returns:
+    Returns
+    -------
+    np.ndarray
         Weights, same shape as latitude input.
     """
     dlat: float = np.radians(latitude_res)
     lat = np.radians(latitude)
     h = np.sin(lat + dlat / 2) - np.sin(lat - dlat / 2)
-    return h * dlat / (np.pi * 4)  # type: ignore
+    return h * dlat / (np.pi * 4)
 
 
 def format_weights(
@@ -278,17 +373,29 @@ def format_weights(
     input_chunks: tuple[int, ...] | None,
     output_chunks: tuple[int, ...] | int | None,
 ) -> xr.DataArray:
-    """Format the raw weights array such that:
+    """Format the raw weights array to match input properties and optimize performance.
 
-    1. Weights match the dtype of the input data
-    1. Weights are chunked 1:1 with the source data
-    2. Weights are chunked as requested in the target grid. If no chunks are
-        provided, the same chunksize as the source grid will be used.
-        See: https://github.com/dask/dask/issues/2225
-    3. Weights are converted to a sparse representation (on a per chunk basis)
-        if the `sparse` package is available.
+    Ensures weights match the input dtype, follows a 1:1 chunking strategy with
+    source data, and converts to a sparse representation if the `sparse` package
+    is available.
 
-    Returns weights that are compatible with both sparse and dense numpy arrays.
+    Parameters
+    ----------
+    weights : xr.DataArray
+        The raw weights DataArray.
+    coord : Hashable
+        The coordinate name.
+    input_dtype : np.dtype
+        The dtype of the input data to match.
+    input_chunks : tuple[int, ...] | None
+        Chunks of the input data.
+    output_chunks : tuple[int, ...] | int | None
+        Desired chunks for the output data.
+
+    Returns
+    -------
+    xr.DataArray
+        The formatted weights DataArray, potentially sparse and dask-backed.
     """
     # Use single precision weights at minimum, double if input is double
     weights_dtype = np.result_type(np.float32, input_dtype)
@@ -307,10 +414,13 @@ def format_weights(
 
     if chunks:
         new_weights = new_weights.chunk(chunks)
-        # TEMPORARY: Disable sparse conversion to fix hanging issue
-        # if sparse is not None:
-        #     new_weights.data = new_weights.data.map_blocks(sparse.COO)
-    # elif sparse is not None:
-    #     new_weights.data = sparse.COO(weights.data)
+        if sparse is not None:
+            # Use a safe sparse conversion that doesn't hang
+            # We wrap sparse.COO in a way that dask handles correctly
+            new_weights.data = new_weights.data.map_blocks(
+                lambda x: sparse.COO.from_numpy(x) if isinstance(x, np.ndarray) else x, dtype=new_weights.dtype
+            )
+    elif sparse is not None:
+        new_weights.data = sparse.COO.from_numpy(weights.data)
 
-    return new_weights  # type: ignore
+    return new_weights

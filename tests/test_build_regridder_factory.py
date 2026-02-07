@@ -1,13 +1,12 @@
 """Tests for the build_regridder factory API with backward compatibility."""
 
 import numpy as np
-import pytest
 import xarray as xr
 
 import monet_regrid as xrg
 
 # REBRAND NOTICE: This test file has been updated to use the new monet_regrid package.
-# Old import: import xarray_regrid as xrg
+# Old import: import monet_regrid as xrg
 # New import: import monet_regrid as xrg
 
 
@@ -71,9 +70,7 @@ def test_build_regridder_with_conservative_method():
     target_grid = xr.Dataset({"lat": ("lat", np.linspace(-4, 4, 8)), "lon": ("lon", np.linspace(-4, 4, 8))})
 
     regridder_accessor = xrg.Regridder(source_data)
-    built_regridder = regridder_accessor.build_regridder(
-        target_grid, method="conservative", skipna=True, nan_threshold=0.5
-    )
+    built_regridder = regridder_accessor.build_regridder(target_grid, method="conservative", skipna=True, nan_threshold=0.5)
 
     assert isinstance(built_regridder, xrg.RectilinearRegridder)
     assert built_regridder.method == "conservative"
@@ -243,7 +240,3 @@ def test_build_regridder_default_method():
 
     assert isinstance(built_regridder, xrg.RectilinearRegridder)
     assert built_regridder.method == "linear"  # Default method
-
-
-if __name__ == "__main__":
-    pytest.main([__file__])

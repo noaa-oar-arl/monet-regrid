@@ -1,12 +1,9 @@
 """Test for curvilinear interpolator with radius of influence."""
 
-import logging
-
 import numpy as np
-import pytest
 import xarray as xr
 
-from monet_regrid.curvilinear import CurvilinearInterpolator
+import monet_regrid  # noqa: F401
 
 
 def test_curvilinear_nearest_with_radius_of_influence():
@@ -15,7 +12,7 @@ def test_curvilinear_nearest_with_radius_of_influence():
     source_lat = np.array([[0.0, 1.0], [0.0, 1.0]])
     source_lon = np.array([[-1.0, 0.0], [-1.0, 0.0]])
 
-    source_grid = xr.Dataset({"latitude": (["y", "x"], source_lat), "longitude": (["y", "x"], source_lon)})
+    xr.Dataset({"latitude": (["y", "x"], source_lat), "longitude": (["y", "x"], source_lon)})
 
     # Create a target grid
     target_lat = np.array([[0.5, 1.5], [0.5, 1.5]])
@@ -27,13 +24,14 @@ def test_curvilinear_nearest_with_radius_of_influence():
 
     # Create test data
     data_values = np.array([[280.0, 285.0], [282.0, 287.0]])
-    test_data = xr.DataArray(data_values, dims=["y", "x"])
+    test_data = xr.DataArray(
+        data_values,
+        dims=["y", "x"],
+        coords={"latitude": (("y", "x"), source_lat), "longitude": (("y", "x"), source_lon)},
+    )
 
     # Test with a radius of influence
-    interpolator = CurvilinearInterpolator(
-        source_grid, target_grid, method="nearest", radius_of_influence=100000
-    )
-    result = interpolator(test_data)
+    result = test_data.regrid.nearest(target_grid, radius_of_influence=100000)
 
     # Result should be finite and reasonable
     assert result.shape == target_lat.shape
@@ -42,8 +40,7 @@ def test_curvilinear_nearest_with_radius_of_influence():
     assert np.all(result.values <= 300.0)
 
     # Test with a very small radius of influence
-    interpolator = CurvilinearInterpolator(source_grid, target_grid, method="nearest", radius_of_influence=1)
-    result = interpolator(test_data)
+    result = test_data.regrid.nearest(target_grid, radius_of_influence=1)
 
     # Result should be all NaNs
     assert result.shape == target_lat.shape
@@ -52,4 +49,3 @@ def test_curvilinear_nearest_with_radius_of_influence():
 
 if __name__ == "__main__":
     test_curvilinear_nearest_with_radius_of_influence()
-    logging.info("All tests passed!")
